@@ -4,7 +4,7 @@ from copy import copy
 from os import environ, linesep
 from rich import print
 
-import openai
+from openai import OpenAI
 
 from .base_translator import Base
 
@@ -33,8 +33,10 @@ class GPT4(Base):
         self.context = "<summary>The start of the story.</summary>"
         self.key_len = len(key.split(","))
 
+        self.client = OpenAI(api_key=key)
         if api_base:
-            openai.api_base = api_base
+            self.client.base_url = api_base
+
         self.prompt_template = (
             prompt_template
             or environ.get(PROMPT_ENV_MAP["user"])
@@ -53,13 +55,9 @@ class GPT4(Base):
         self.temperature = temperature
 
     def rotate_key(self):
-        openai.api_key = next(self.keys)
+        self.client.api_key = next(self.keys)
 
     def create_chat_completion(self, text):
-        # content = self.prompt_template.format(
-        #     text=text, language=self.language, crlf="\n"
-        # )
-
         content = f"{self.context if self.context_flag else ''} {self.prompt_template.format(text=text, language=self.language, crlf=linesep)}"
 
         sys_content = self.system_content or self.prompt_sys_msg.format(crlf="\n")
@@ -74,13 +72,13 @@ class GPT4(Base):
         ]
 
         if self.deployment_id:
-            return openai.ChatCompletion.create(
-                engine=self.deployment_id,
+            return self.client.chat.completions.create(
+                model=self.deployment_id,
                 messages=messages,
                 temperature=self.temperature,
             )
 
-        return openai.ChatCompletion.create(
+        return self.client.chat.completions.create(
             model="gpt-4",
             messages=messages,
             temperature=self.temperature,
@@ -89,25 +87,21 @@ class GPT4(Base):
     def get_translation(self, text):
         self.rotate_key()
 
-        completion = {}
+        completion = None
         try:
             completion = self.create_chat_completion(text)
-        except Exception:
-            if (
-                "choices" not in completion
-                or not isinstance(completion["choices"], list)
-                or len(completion["choices"]) == 0
-            ):
+        except Exception as e:
+            if not completion or not completion.choices or len(completion.choices) == 0:
                 raise
-            if completion["choices"][0]["finish_reason"] != "length":
+            if completion.choices[0].finish_reason != "length":
                 raise
 
         # work well or exception finish by length limit
-        choice = completion["choices"][0]
+        choice = completion.choices[0]
 
-        t_text = choice.get("message").get("content", "").encode("utf8").decode()
+        t_text = choice.message.content.encode("utf8").decode()
 
-        if choice["finish_reason"] == "length":
+        if choice.finish_reason == "length":
             with open("log/long_text.txt", "a") as f:
                 print(
                     f"""==================================================
@@ -118,6 +112,7 @@ The total token is too long and cannot be completely translated\n
                 )
 
         return t_text
+
 
     def translate(self, text, needprint=True):
         # print("=================================================")
@@ -325,6 +320,4 @@ The total token is too long and cannot be completely translated\n
         return result_list
 
     def set_deployment_id(self, deployment_id):
-        openai.api_type = "azure"
-        openai.api_version = "2023-03-15-preview"
         self.deployment_id = deployment_id
